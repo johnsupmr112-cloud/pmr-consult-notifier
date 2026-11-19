@@ -1,0 +1,5 @@
+.DS_Store
+# 不要提交任何含 Token 或病人資料的檔案
+*.xlsx
+*.csv
+.env
