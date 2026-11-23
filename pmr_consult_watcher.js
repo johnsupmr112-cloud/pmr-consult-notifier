@@ -1,52 +1,64 @@
 /* =========================================================================
- * PMR 新會診 Telegram 通知  pmr_consult_watcher.js  v2
+ * PMR Consult Notifier — pmr_consult_watcher.js  v2.0.1
  *
- * 每 5 分鐘查一次會診清單，有新的 PMR 會診就傳 Telegram 到手機。
- * 通知只含科別與會診時限，不含姓名、病歷號、床號。
+ * Polls the hospital consultation list every 5 minutes and sends a Telegram
+ * message when a new PMR (Physical Medicine & Rehabilitation) consult appears.
+ * Notifications are de-identified: only the requesting department and the
+ * consult deadline are sent — never patient name, chart number, or bed.
  *
- * 第一次使用：
- *   1. 打開會診「查詢頁」，選好條件，【先不要按查詢】
- *   2. F12 → Console → 貼上整段 → Enter
- *   3. 輸入 Bot Token 與 Chat ID（只存在這台電腦的瀏覽器）
- *   4. 手機收到「監控啟動」即完成。分頁保持開啟、電腦不要睡眠。
- * 之後：在查詢頁或清單頁貼上都可以（會沿用記住的查詢條件）。
- * 想換查詢條件：在查詢頁重選條件後再貼一次。
+ * First-time setup:
+ *   1. Open the consultation *query* page and select the usual filters.
+ *      Do NOT press the query button yet.
+ *   2. F12 → Console → paste this entire file → Enter.
+ *   3. Enter the Telegram Bot Token and Chat ID when prompted
+ *      (stored only in this browser's localStorage).
+ *   4. Setup is complete once the phone receives the "monitor started" message.
+ *      Keep the tab open and do not let the computer sleep.
+ * Subsequent runs: paste on either the query page or the list page; the saved
+ * query is reused. To change the filters, re-select them on the query page and
+ * paste the script again.
  *
- * Console 指令：
- *   PMRWatch.status()      目前狀態
- *   PMRWatch.checkNow()    立刻檢查一次
- *   PMRWatch.test()        傳測試訊息
- *   PMRWatch.stop()        停止監控
- *   PMRWatch.resetSeen()   清除已看過紀錄
- *   PMRWatch.forgetToken() 刪除本機的 Token / Chat ID
+ * Console commands:
+ *   PMRWatch.status()      Show current state
+ *   PMRWatch.checkNow()    Run one check immediately
+ *   PMRWatch.test()        Send a test message
+ *   PMRWatch.stop()        Stop monitoring
+ *   PMRWatch.resetSeen()   Clear the record of already-seen consults
+ *   PMRWatch.forgetToken() Remove the stored Token / Chat ID from this browser
  *
- * ★ Token 絕對不要寫進這個檔案或 commit 到 repo。
+ * SECURITY: never hard-code the Bot Token in this file or commit it.
+ *
+ * Note: user-facing strings (Telegram messages, console output) and the table
+ * header names below are intentionally in Traditional Chinese, matching the
+ * hospital system's UI.
  * ========================================================================= */
 
 (() => {
   'use strict';
 
-  // ======================= 可調整參數 =======================
+  // ======================= Configuration =======================
   const CONFIG = {
-    intervalMin: 5,                      // 每幾分鐘檢查一次
-    jitterSec: 30,                       // 間隔隨機加減秒數
-    activeHours: null,                   // null = 24 小時；[7, 22] = 07:00–21:59；[17, 8] = 跨夜
-    msgFields: ['病人科別', '會診時限'],  // 通知帶的欄位。★ 不要放姓名、病歷號、床號
-    heartbeatHour: 8,                    // 每天幾點後發心跳；null = 不發
-    failAlertAfter: 3,                   // 連續失敗幾次才警示
-    keepSeenDays: 14,                    // 已看過紀錄保留天數
+    intervalMin: 5,                      // Polling interval in minutes
+    jitterSec: 30,                       // Random ± offset added to each interval
+    activeHours: null,                   // null = 24 h; [7, 22] = 07:00–21:59; [17, 8] = overnight window
+    msgFields: ['病人科別', '會診時限'],  // Columns included in notifications. Do NOT add identifiers (name, chart no., bed).
+    heartbeatHour: 8,                    // Send a daily heartbeat after this hour; null = disabled
+    failAlertAfter: 3,                   // Consecutive failures before an alert is sent
+    keepSeenDays: 14,                    // Retention period for seen-consult records
   };
-  // =========================================================
+  // =============================================================
 
+  // localStorage keys (kept stable so saved settings survive upgrades)
   const KEY = { tg: 'PMR_WATCH_TG', seen: 'PMR_WATCH_SEEN', hb: 'PMR_WATCH_HB', query: 'PMR_WATCH_REQ' };
+  // Column headers of the consult list table, as rendered by the hospital system
   const HEADERS = ['病歷號', '病人姓名', '病房床號', '會診時限', '被會科別', '被會醫師', '病人科別', '狀態'];
 
-  /* ---------------- 小工具 ---------------- */
+  /* ---------------- Utilities ---------------- */
   const log = (...a) => console.log('%c[PMR 監控]', 'color:#2a7;font-weight:bold', ...a);
   const warn = (...a) => console.warn('[PMR 監控]', ...a);
   const clean = (s) => (s || '').replace(/\s+/g, ' ').trim();
   const pad = (n) => String(n).padStart(2, '0');
-  const today = () => new Date().toLocaleDateString('sv'); // YYYY-MM-DD
+  const today = () => new Date().toLocaleDateString('sv'); // YYYY-MM-DD in local time
   const timeStr = (t = Date.now()) => {
     const d = new Date(t);
     return `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -60,7 +72,7 @@
   };
   const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
 
-  // 重複執行時先停掉舊的
+  // If the script is pasted again, stop the previous instance first
   if (window.PMRWatch) window.PMRWatch.stop(true);
 
   /* ---------------- Telegram ---------------- */
@@ -75,7 +87,7 @@
     save(KEY.tg, tg);
   }
 
-  // 回傳 true = 送達；false = 被 Telegram 拒絕；null = 用備援方式送出（無法確認）
+  // Returns true = delivered; false = rejected by Telegram; null = sent via fallback (delivery unknown)
   const send = async (text) => {
     const url = `https://api.telegram.org/bot${tg.token}/sendMessage`;
     try {
@@ -84,16 +96,17 @@
       if (!j.ok) warn('Telegram 拒絕：', j.description);
       return j.ok;
     } catch {
-      // fetch 被擋時改用圖片請求送出
+      // fetch blocked (e.g. by CORS/CSP): fall back to an image request, which still reaches the API
       new Image().src = `${url}?chat_id=${tg.chat}&text=${encodeURIComponent(text)}`;
       return null;
     }
   };
 
-  /* ---------------- 查詢條件 ---------------- */
-  // 在查詢頁：把畫面上選好的條件記下來
+  /* ---------------- Saved query ---------------- */
+  // On the query page: capture the form exactly as the user has filled it in
   const captureQuery = () => {
     for (const form of document.forms) {
+      // Identify the search form by its "Query" / "Search" submit button label
       const btn = [...form.querySelectorAll('input, button')].find((b) =>
         /查詢|搜尋/.test(b.value || b.textContent || '')
       );
@@ -113,7 +126,10 @@
     return null;
   };
 
-  // 條件裡「設定當天」的日期每天自動換成今天（支援 20261119、2026/11/19、2026-11-19、1151119、115/11/19）
+  // Any occurrence of the capture date in the saved query is rolled forward to today,
+  // so a "today only" filter keeps working after midnight.
+  // Supported formats: 20261119, 2026/11/19, 2026-11-19, 1151119, 115/11/19 (ROC calendar),
+  // both raw and URL-encoded.
   const dateForms = (date) => {
     const y = date.getFullYear(), m = pad(date.getMonth() + 1), d = pad(date.getDate()), roc = y - 1911;
     const forms = [`${y}${m}${d}`, `${y}/${m}/${d}`, `${y}-${m}-${d}`, `${roc}/${m}/${d}`, `${roc}${m}${d}`];
@@ -127,7 +143,7 @@
     return str;
   };
 
-  /* ---------------- 抓清單 ---------------- */
+  /* ---------------- Fetching the list ---------------- */
   const fetchList = async () => {
     const q = load(KEY.query, null);
     const res = await fetch(rollDate(q.url, q.capturedAt), {
@@ -138,15 +154,16 @@
       cache: 'no-store',
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    // 依網頁編碼解碼（院內系統可能是 Big5）
+    // Decode with the page's own charset (legacy hospital systems may use Big5)
     const charset = (res.headers.get('content-type') || '').match(/charset=([\w-]+)/i)?.[1] || document.characterSet;
     const html = new TextDecoder(charset).decode(await res.arrayBuffer());
     return parseList(new DOMParser().parseFromString(html, 'text/html'));
   };
 
-  // 回傳 { status: 'ok' | 'login' | 'notList', rows: [{ key, info }] }
+  // Returns { status: 'ok' | 'login' | 'notList', rows: [{ key, info }] }
   const parseList = (doc) => {
-    // 清單表頭 = 同一列至少 3 個欄位名稱完全相符（避免把查詢表單當成清單）
+    // A row is the list header only if it exactly matches at least 3 known column names.
+    // This prevents the query form's labels from being mistaken for the consult list.
     const isHeader = (cells) => cells.filter((c) => HEADERS.includes(c)).length >= 3;
     let grid = null;
     for (const table of doc.querySelectorAll('table')) {
@@ -155,7 +172,9 @@
     }
     if (!grid) {
       const body = clean(doc.body?.textContent);
+      // A "no records found" message means a valid, empty list
       if (/查無|無資料/.test(body)) return { status: 'ok', rows: [] };
+      // Otherwise, detect a login or session-timeout page by its keywords
       const isLogin = doc.querySelector('input[type=password]') || /登入|login|逾時|timeout/i.test(doc.title + body.slice(0, 800));
       return { status: isLogin ? 'login' : 'notList', rows: [] };
     }
@@ -166,10 +185,10 @@
     const keys = new Set();
     for (const cells of grid.slice(h + 1)) {
       const get = (name) => cells[col(name)] || '';
-      if (isHeader(cells)) continue;                       // 重複的表頭列
-      if (!get('被會科別').toUpperCase().includes('PMR')) continue;
-      if (!/\d/.test(get('病歷號'))) continue;             // 不是資料列
-      const key = `${get('病歷號')}|${get('會診時限')}`;   // 與 scraper 相同的去重鍵
+      if (isHeader(cells)) continue;                       // Repeated header row
+      if (!get('被會科別').toUpperCase().includes('PMR')) continue; // Consulted department must be PMR
+      if (!/\d/.test(get('病歷號'))) continue;             // Chart numbers always contain digits
+      const key = `${get('病歷號')}|${get('會診時限')}`;   // Same dedupe key as pmr-consult-scraper
       if (keys.has(key)) continue;
       keys.add(key);
       rows.push({ key, info: CONFIG.msgFields.map(get).filter(Boolean).join('｜') });
@@ -177,8 +196,9 @@
     return { status: 'ok', rows };
   };
 
-  /* ---------------- 新會診比對 ---------------- */
-  // 回傳這次新出現的會診，並更新已看過紀錄
+  /* ---------------- New-consult detection ---------------- */
+  // Returns consults not seen before, then records every current consult as seen
+  // and prunes records older than the retention period
   const findNew = (rows) => {
     const seen = load(KEY.seen, {});
     const now = Date.now();
@@ -189,6 +209,7 @@
     return fresh;
   };
 
+  // Send one grouped message (max 10 items) and flag the tab title until it regains focus
   const notifyNew = async (fresh, total) => {
     const lines = fresh.slice(0, 10).map((r, i) => `${i + 1}. ${r.info}`);
     if (fresh.length > 10) lines.push(`…另有 ${fresh.length - 10} 筆`);
@@ -198,7 +219,7 @@
     log(msg);
   };
 
-  /* ---------------- 主迴圈 ---------------- */
+  /* ---------------- Main loop ---------------- */
   const S = { timer: null, busy: false, stopped: false, checks: 0, checksSinceHB: 0, fails: 0, alerted: false, lastOk: null, count: null, error: null };
   const originalTitle = document.title;
   const resetTitle = () => (document.title = originalTitle);
@@ -208,7 +229,7 @@
     if (!CONFIG.activeHours) return true;
     const [from, to] = CONFIG.activeHours;
     const h = new Date().getHours();
-    return from <= to ? h >= from && h < to : h >= from || h < to;
+    return from <= to ? h >= from && h < to : h >= from || h < to; // second branch handles overnight windows
   };
 
   const scheduleNext = () => {
@@ -217,6 +238,7 @@
     S.timer = setTimeout(check, ms);
   };
 
+  // At most one heartbeat per day, so a missing heartbeat signals the monitor has died
   const heartbeat = async () => {
     if (CONFIG.heartbeatHour == null || new Date().getHours() < CONFIG.heartbeatHour) return;
     if (load(KEY.hb, '') === today()) return;
@@ -247,7 +269,8 @@
       S.fails++;
       S.error = e.message;
       warn(`檢查失敗（連續 ${S.fails} 次）：${e.message}`);
-      // 登出立刻警示；其他錯誤連續失敗才警示
+      // Session expiry alerts immediately; other errors alert only after repeated failures.
+      // Only one alert is sent per outage; a recovery message follows once checks succeed again.
       if (!S.alerted && (e.login || S.fails >= CONFIG.failAlertAfter)) {
         S.alerted = true;
         await send(
@@ -263,7 +286,7 @@
     }
   }
 
-  /* ---------------- Console 指令 ---------------- */
+  /* ---------------- Console API ---------------- */
   window.PMRWatch = {
     CONFIG,
     checkNow: check,
@@ -288,9 +311,9 @@
     forgetToken: () => localStorage.removeItem(KEY.tg),
   };
 
-  /* ---------------- 啟動 ---------------- */
+  /* ---------------- Startup ---------------- */
   (async () => {
-    // 在查詢頁執行 → 記住（或更新）畫面上的查詢條件
+    // Running on the query page (no list table present): capture or update the saved query
     const onListPage = parseList(document).status === 'ok';
     if (!onListPage) {
       const q = captureQuery();
@@ -307,7 +330,8 @@
       S.count = r.rows.length;
       S.lastOk = Date.now();
 
-      // 第一次只建立基準不通知；之後重新執行會補通知中斷期間出現的新會診
+      // First run only records a baseline (no alerts for existing consults).
+      // Later runs also report consults that arrived while the monitor was down.
       const firstRun = Object.keys(load(KEY.seen, {})).length === 0;
       const fresh = findNew(r.rows);
       if (!firstRun && fresh.length) await notifyNew(fresh, r.rows.length);
@@ -315,7 +339,8 @@
       const hours = CONFIG.activeHours ? `${CONFIG.activeHours[0]}:00–${CONFIG.activeHours[1]}:00` : '24 小時';
       const ok = await send(`✅ PMR 會診監控啟動\n目前清單 ${r.rows.length} 筆｜每 ${CONFIG.intervalMin} 分鐘檢查｜${hours}`);
       if (ok === false) console.error('[PMR 監控] Telegram 傳送失敗。執行 PMRWatch.forgetToken() 後重新貼上腳本。');
-      if (CONFIG.heartbeatHour != null && new Date().getHours() >= CONFIG.heartbeatHour) save(KEY.hb, today()); // 啟動訊息代替今天的心跳
+      // The startup message counts as today's heartbeat
+      if (CONFIG.heartbeatHour != null && new Date().getHours() >= CONFIG.heartbeatHour) save(KEY.hb, today());
 
       log(`啟動完成：PMR ${r.rows.length} 筆，每 ${CONFIG.intervalMin} 分鐘檢查。這個分頁請保持開啟。`);
       scheduleNext();

@@ -1,17 +1,20 @@
-# 版本紀錄
+# Changelog
+
+## v2.0.1 — 2026-11-23
+- Rewrote all code comments, README, and CHANGELOG in English. No functional changes.
 
 ## v2 — 2026-11-19
-第一個收進版本控制的版本。
-- 在查詢頁貼上腳本，自動記住畫面上的查詢條件；條件裡的當天日期每天自動換成今天
-- 每 5 分鐘檢查，新 PMR 會診傳 Telegram（只含科別與會診時限）
-- 登出立即警示、連續 3 次失敗警示、恢復通知、每日心跳
-- Token / Chat ID / 查詢條件只存在本機 localStorage
+First version under version control.
+- Captures the filters on the query page; any date matching the capture date is rolled forward to today
+- Polls every 5 minutes and sends new PMR consults to Telegram (department and deadline only)
+- Immediate alert on session expiry, alert after 3 consecutive failures, recovery notice, daily heartbeat
+- Token, Chat ID, and saved query are stored only in local `localStorage`
 
-### 開發過程（未收進版本控制）
-- v1：GET 目前網址重新抓清單 → 實際上拿到的是查詢頁，抓不到清單
-- v1.1：排除重複表頭列
-- v1.2：加入表單預設值、Network「Copy as fetch」手動設定等抓取方式
-- v1.3：改為在查詢頁記住查詢條件（實測可用）
-- v2：移除用不到的抓取路線，精簡重寫
+### Development history (not under version control)
+- v1: Re-fetched the current URL with GET — actually received the query page, so the list was never read
+- v1.1: Skipped repeated header rows
+- v1.2: Added form-default and manual "Copy as fetch" request strategies
+- v1.3: Switched to capturing the query on the query page (verified working)
+- v2: Removed unused strategies and simplified the code
 
-<!-- 之後每次更新：在最上方新增 ## vN — 日期，同步修改腳本開頭版本號，並打 tag（git tag vN） -->
+<!-- For each release: add a "## vX — date" entry at the top, bump the version in the script header, and create a tag (git tag vX). -->

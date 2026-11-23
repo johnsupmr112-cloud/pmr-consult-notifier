@@ -1,66 +1,77 @@
-# PMR 新會診 Telegram 通知
+# PMR Consult Notifier
 
-在院內會診系統的瀏覽器 Console 執行，每 5 分鐘查一次會診清單，有新的 PMR 會診就傳 Telegram 到手機。
+A browser-console script that polls the hospital consultation system every 5 minutes and sends a Telegram message when a new PMR (Physical Medicine & Rehabilitation) consult appears.
 
-- 純 JavaScript，無外部相依，適用院內網路環境
-- 通知去識別化：只含科別與會診時限，不含姓名、病歷號、床號
+- Plain JavaScript with no external dependencies — runs inside restricted hospital intranets
+- De-identified notifications: only the requesting department and consult deadline are sent; never patient name, chart number, or bed
 
-## 事前準備（只需一次）
+> The target hospital system's UI is in Traditional Chinese, so table header names, Telegram messages, and console output are intentionally in Chinese. Code comments and documentation are in English.
 
-1. 在 Telegram 找 **@BotFather** → `/newbot` 建立 bot，取得 **Bot Token**
-2. 對自己的 bot 按 **Start**、傳一句話
-3. 用瀏覽器開 `https://api.telegram.org/bot<TOKEN>/getUpdates`，找到 `"chat":{"id":…}` 的數字，即 **Chat ID**
+## Prerequisites (one-time)
 
-## 用法
+1. In Telegram, message **@BotFather** → `/newbot` to create a bot and obtain a **Bot Token**.
+2. Open your bot, press **Start**, and send it any message.
+3. Visit `https://api.telegram.org/bot<TOKEN>/getUpdates` in a browser and find the number in `"chat":{"id":…}` — this is your **Chat ID**.
 
-**第一次：**
+## Usage
 
-1. 打開會診**查詢頁**，照平常選好條件，**先不要按查詢**
-2. `F12` → Console → 貼上 `pmr_consult_watcher.js` 全文 → Enter
-3. 跳出視窗時輸入 Bot Token 與 Chat ID（只存在這台電腦的瀏覽器）
-4. 手機收到「✅ PMR 會診監控啟動」即完成
+**First run**
 
-**之後：** 在查詢頁或清單頁貼上都可以，會沿用記住的查詢條件。想換條件就在查詢頁重選後再貼一次。
+1. Open the consultation **query page** and select your usual filters. **Do not press the query button.**
+2. Press `F12` → Console → paste the full contents of `pmr_consult_watcher.js` → Enter.
+3. Enter the Bot Token and Chat ID when prompted. They are stored only in this browser's `localStorage`.
+4. Setup is complete when your phone receives the "✅ PMR 會診監控啟動" (monitor started) message.
 
-**注意：** 分頁要一直開著、不要在該分頁跳轉，電腦不能睡眠。
+**Subsequent runs** — paste the script on either the query page or the list page; the saved query is reused. To change filters, re-select them on the query page and paste again.
 
-## 會收到的訊息
+**Requirements while running** — keep the tab open, do not navigate away in that tab, and prevent the computer from sleeping.
 
-| 訊息 | 時機 |
+## Notifications
+
+| Message | Meaning |
 |---|---|
-| ✅ 監控啟動 | 腳本啟動成功 |
-| 🔔 PMR 新會診 N 筆 | 出現新會診（第一次執行只建立基準，不通知既有會診） |
-| ⚠️ 系統已登出 | 在**另一個分頁**重新登入即自動恢復 |
-| ⚠️ 連續 N 次檢查失敗 | 網路或系統異常 |
-| ✅ 監控已恢復 | 從登出或失敗中恢復 |
-| 🟢 運作中 | 每天早上 8 點後一次；沒收到代表監控已中斷 |
+| ✅ 監控啟動 | Monitor started successfully |
+| 🔔 PMR 新會診 N 筆 | N new consults. The first run records a baseline and does not alert on existing consults. |
+| ⚠️ 系統已登出 | Session expired. Log in again **in another tab**; monitoring resumes automatically. |
+| ⚠️ 連續 N 次檢查失敗 | N consecutive check failures (network or system issue) |
+| ✅ 監控已恢復 | Recovered from a session expiry or failure |
+| 🟢 運作中 | Daily heartbeat after 08:00. If it does not arrive, the monitor has stopped. |
 
-## Console 指令
+## Console API
 
-| 指令 | 說明 |
+| Command | Description |
 |---|---|
-| `PMRWatch.status()` | 目前狀態 |
-| `PMRWatch.checkNow()` | 立刻檢查一次 |
-| `PMRWatch.test()` | 傳測試訊息 |
-| `PMRWatch.stop()` | 停止監控 |
-| `PMRWatch.resetSeen()` | 清除已看過紀錄 |
-| `PMRWatch.forgetToken()` | 刪除本機的 Token / Chat ID |
+| `PMRWatch.status()` | Show current state |
+| `PMRWatch.checkNow()` | Run one check immediately |
+| `PMRWatch.test()` | Send a test message |
+| `PMRWatch.stop()` | Stop monitoring |
+| `PMRWatch.resetSeen()` | Clear the record of already-seen consults |
+| `PMRWatch.forgetToken()` | Remove the stored Token / Chat ID from this browser |
 
-## 主要設定（`CONFIG`）
+## Configuration (`CONFIG`)
 
-| 參數 | 預設 | 說明 |
+| Option | Default | Description |
 |---|---|---|
-| `intervalMin` | `5` | 每幾分鐘檢查一次 |
-| `activeHours` | `null` | `null` = 24 小時；`[7, 22]` = 只在 07:00–21:59；`[17, 8]` = 跨夜 |
-| `msgFields` | `['病人科別','會診時限']` | 通知帶的欄位，**不要放個資** |
-| `heartbeatHour` | `8` | 每天幾點後發心跳；`null` = 不發 |
-| `failAlertAfter` | `3` | 連續失敗幾次才警示 |
+| `intervalMin` | `5` | Polling interval in minutes |
+| `jitterSec` | `30` | Random ± offset added to each interval |
+| `activeHours` | `null` | `null` = 24 h; `[7, 22]` = 07:00–21:59 only; `[17, 8]` = overnight window |
+| `msgFields` | `['病人科別','會診時限']` | Columns included in notifications. **Do not add identifiers.** |
+| `heartbeatHour` | `8` | Send a daily heartbeat after this hour; `null` disables it |
+| `failAlertAfter` | `3` | Consecutive failures before an alert is sent |
+| `keepSeenDays` | `14` | Retention period for seen-consult records |
 
-## 安全
+## How it works
 
-- **Bot Token 絕對不要寫進程式碼或 commit**；腳本只把它存在本機瀏覽器的 localStorage
-- 通知經由 Telegram 伺服器（境外），因此只傳去識別化資訊
+1. **Query capture** — on the query page, the filled-in search form is serialized (URL, method, body) and saved to `localStorage`. Any occurrence of the capture date is rolled forward to the current date on each request.
+2. **Polling** — the saved request is replayed with the user's session cookies; the response is decoded with the page's charset and parsed.
+3. **Parsing** — the list table is identified by a header row matching at least three known column names. Rows are filtered to the PMR department and de-duplicated by chart number + consult deadline.
+4. **Diffing** — consults not previously seen trigger one grouped Telegram message.
 
-## 相關專案
+## Security
 
-- [pmr-consult-scraper](https://github.com/johnsupmr112-cloud/pmr-consult-scraper)：把會診清單整理成可列印的 Excel
+- **Never hard-code or commit the Bot Token.** The script stores it only in the local browser's `localStorage`.
+- Telegram servers are outside the hospital network, so only de-identified information is transmitted.
+
+## Related projects
+
+- [pmr-consult-scraper](https://github.com/johnsupmr112-cloud/pmr-consult-scraper) — exports the consultation list to a print-ready Excel file
